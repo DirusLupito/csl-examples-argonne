@@ -1,5 +1,5 @@
-CSL Examples modified as part of my Internship.
-===============================================
+CSL Examples modified
+=====================
 
 Original readme below:
 
