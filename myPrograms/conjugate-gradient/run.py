@@ -103,7 +103,6 @@ from typing import Optional
 
 import numpy as np
 from cg import conjugateGradient
-from bicgstab import bicgstab
 from cmd_parser import parse_args
 from scipy.sparse.linalg import eigs
 from util import csr_7_pt_stencil, hwl_2_oned_colmajor, oned_to_hwl_colmajor
@@ -226,45 +225,51 @@ def timing_analysis(height, width, time_memcpy_hwl, time_ref_hwl):
   print(f"time_send = {time_send} us")
 
 def k_function(x, y, z):
-    """Variable coefficient k(x,y,z) = 1 + 0.5sin(πx)sin(πy)sin(πz)"""
-    # return 1 + 0.5 * np.sin(np.pi*x) * np.sin(np.pi*y) * np.sin(np.pi*z)
-    return 1
+  """Variable coefficient k(x,y,z)"""
+  # return 1 + 0.5 * np.sin(np.pi*x) * np.sin(np.pi*y) * np.sin(np.pi*z)
+  return x * y
 
 def u_exact(x, y, z):
-    """Exact solution u(x,y,z) = x(1-x)y(1-y)z(1-z)"""
-    # return x*(1-x)*y*(1-y)*z*(1-z)
-    return np.sin(np.pi*x) * np.sin(np.pi*y)
+  """Exact solution u(x,y,z)"""
+  # return x*(1-x)*y*(1-y)*z*(1-z)
+  return np.sin(np.pi*x) * np.sin(np.pi*y)
 
 def compute_source_term(x, y, z):
-    """
-    Compute the source term f = ∇k∇u for our specific k and u.
-    This can be computed analytically or using finite differences.
-    """
-    # For this problem, we'll use finite differences to approximate the source term
-    h = 0.001  # Small h for accurate finite difference
-    
-    # Compute u and its derivatives at the given point
-    u = u_exact(x, y, z)
-    
-    # Compute first derivatives of u using central differences
-    ux = (u_exact(x+h, y, z) - u_exact(x-h, y, z)) / (2*h)
-    uy = (u_exact(x, y+h, z) - u_exact(x, y-h, z)) / (2*h)
-    uz = (u_exact(x, y, z+h) - u_exact(x, y, z-h)) / (2*h)
-    
-    # Compute k and its derivatives
-    k = k_function(x, y, z)
-    kx = (k_function(x+h, y, z) - k_function(x-h, y, z)) / (2*h)
-    ky = (k_function(x, y+h, z) - k_function(x, y-h, z)) / (2*h)
-    kz = (k_function(x, y, z+h) - k_function(x, y, z-h)) / (2*h)
-    
-    # Compute second derivatives of u
-    uxx = (u_exact(x+h, y, z) - 2*u_exact(x, y, z) + u_exact(x-h, y, z)) / (h*h)
-    uyy = (u_exact(x, y+h, z) - 2*u_exact(x, y, z) + u_exact(x, y-h, z)) / (h*h)
-    uzz = (u_exact(x, y, z+h) - 2*u_exact(x, y, z) + u_exact(x, y, z-h)) / (h*h)
-    
-    # Compute ∇k∇u = k∇²u + ∇k·∇u
-    return k * (uxx + uyy + uzz) + kx * ux + ky * uy + kz * uz
-    # return -10 * np.pi**2 * np.sin(np.pi*x) * np.sin(np.pi*y)
+  """
+  Computes the source term f = ∇k∇u for our specific k and u.
+  This can be computed analytically or using finite differences.
+  """
+  # # Use finite differences to approximate the source term
+  # h = 0.001  # Small h for accurate finite difference
+  
+  # # Compute u and its derivatives at the given point
+  # u = u_exact(x, y, z)
+  
+  # # Compute first derivatives of u using central differences
+  # ux = (u_exact(x+h, y, z) - u_exact(x-h, y, z)) / (2*h)
+  # uy = (u_exact(x, y+h, z) - u_exact(x, y-h, z)) / (2*h)
+  # uz = (u_exact(x, y, z+h) - u_exact(x, y, z-h)) / (2*h)
+  
+  # # Compute k and its derivatives
+  # k = k_function(x, y, z)
+  # kx = (k_function(x+h, y, z) - k_function(x-h, y, z)) / (2*h)
+  # ky = (k_function(x, y+h, z) - k_function(x, y-h, z)) / (2*h)
+  # kz = (k_function(x, y, z+h) - k_function(x, y, z-h)) / (2*h)
+  
+  # # Compute second derivatives of u
+  # uxx = (u_exact(x+h, y, z) - 2*u_exact(x, y, z) + u_exact(x-h, y, z)) / (h*h)
+  # uyy = (u_exact(x, y+h, z) - 2*u_exact(x, y, z) + u_exact(x, y-h, z)) / (h*h)
+  # uzz = (u_exact(x, y, z+h) - 2*u_exact(x, y, z) + u_exact(x, y, z-h)) / (h*h)
+  
+  # # Compute ∇k∇u = k∇²u + ∇k·∇u
+  # return k * (uxx + uyy + uzz) + kx * ux + ky * uy + kz * uz
+  k = x * y
+  delU = -2 * np.pi**2 * np.sin(np.pi*x) * np.sin(np.pi*y)
+  kx = y
+  ky = x
+  ux = np.pi * np.cos(np.pi*x) * np.sin(np.pi*y)
+  uy = np.pi * np.sin(np.pi*x) * np.cos(np.pi*y)
+  return k * delU + kx * ux + ky * uy
 
 # How to compile
 #   python run.py -m=5 -n=5 -k=5 --latestlink latest --channels=1 \
@@ -332,7 +337,6 @@ def main():
   u_exact_values = u_exact(X, Y, Z)
   
   # Compute the source term (right-hand side)
-  # For the 2D Laplacian: -∇²u = -2π²sin(πx)sin(πy)
   source_term_values = compute_source_term(X, Y, Z)
   
   # Create the right-hand side vector b, applying boundary conditions
@@ -489,7 +493,7 @@ def main():
   print (f"np.linalg.norm(A_csr.data - A_csc.data, np.inf) = {np.linalg.norm(A_csr.data - A_csc.data, np.inf)}")
 
   nrm_b = np.linalg.norm(b_1d.ravel(), 2)
-  eps = 1.0e-5
+  eps = 1.0e-3
   tol = eps * nrm_b
   print(f"|b| = {nrm_b}")
   print(f"max_ite = {max_ite}")
@@ -507,19 +511,6 @@ def main():
   # Calculate RMSE for CPU
   rmse_cpu = np.sqrt(np.mean(np.square(error_cpu)))
   print(f"CPU root mean square error: {rmse_cpu:.6e}")
-  
-  xf_1d, xi, k = bicgstab(A_csr, x_1d, b_1d, max_ite, tol)
-  print(f"[host] after BiCGSTAB, xi = {xi}, k = {k}")
-  # Analyze CPU solution accuracy
-  cpu_numerical_solution_bicgstab = oned_to_hwl_colmajor(height, width, zDim, xf_1d, np.float32)
-  error_cpu_bicgstab = cpu_numerical_solution_bicgstab - u_exact_values[:,:,:zDim]
-  max_abs_error_cpu_bicgstab = np.max(np.abs(error_cpu_bicgstab))
-  print(f"CPU maximum absolute error (BiCGSTAB): {max_abs_error_cpu_bicgstab:.6e}")
-  # Calculate RMSE for CPU BiCGSTAB
-  rmse_cpu_bicgstab = np.sqrt(np.mean(np.square(error_cpu_bicgstab)))
-  print(f"CPU root mean square error (BiCGSTAB): {rmse_cpu_bicgstab:.6e}")
-  
-  exit(0)
 
   memcpy_dtype = MemcpyDataType.MEMCPY_32BIT
   simulator = SdkRuntime(dirname, cmaddr=args.cmaddr)
