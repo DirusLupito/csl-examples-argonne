@@ -228,7 +228,7 @@ def timing_analysis(height, width, time_memcpy_hwl, time_ref_hwl):
 def k_function(x, y, z):
   """Variable coefficient k(x,y,z)"""
   # return 1 + 0.5 * np.sin(np.pi*x) * np.sin(np.pi*y) * np.sin(np.pi*z)
-  return x * y
+  return 1 + x * y
 
 def u_exact(x, y, z):
   """Exact solution u(x,y,z)"""
@@ -264,7 +264,7 @@ def compute_source_term(x, y, z):
   
   # # Compute ∇k∇u = k∇²u + ∇k·∇u
   # return k * (uxx + uyy + uzz) + kx * ux + ky * uy + kz * uz
-  k = x * y
+  k = 1 + x * y
   delU = -2 * np.pi**2 * np.sin(np.pi*x) * np.sin(np.pi*y)
   kx = y
   ky = x
@@ -463,6 +463,25 @@ def main():
     eps = 1.0e-6
     tol = eps * nrm_b
     print(f"tol = {tol:.6e} (eps = {eps})")
+
+    # Run CPU solution
+    t0_cpu = time.time()
+    xf_1d, rho, k_cpu = conjugateGradient(A_csr, x_1d, b_1d, max_ite, tol)
+    t1_cpu = time.time()
+    cpu_time = t1_cpu - t0_cpu
+    cpu_times.append(cpu_time)
+    print(f"CPU conjugate gradient took {cpu_time:.4f} seconds with {k_cpu} iterations")
+
+    # Analyze CPU solution accuracy
+    cpu_numerical_solution = oned_to_hwl_colmajor(height, width, zDim, xf_1d, np.float32)
+    error_cpu = cpu_numerical_solution - u_exact_values[:,:,:zDim]
+    max_abs_error_cpu = np.max(np.abs(error_cpu))
+    cpu_errors.append(max_abs_error_cpu)
+    print(f"CPU maximum absolute error: {max_abs_error_cpu:.6e}")
+
+    # Calculate RMSE for CPU
+    rmse_cpu = np.sqrt(np.mean(np.square(error_cpu)))
+    print(f"CPU root mean square error: {rmse_cpu:.6e}")
   
     t0 = time.time()
 
@@ -714,25 +733,6 @@ def main():
     # Calculate RMSE for WSE
     rmse_wse = np.sqrt(np.mean(np.square(error_wse)))
     print(f"WSE root mean square error: {rmse_wse:.6e}")
-
-    # Run CPU solution
-    t0_cpu = time.time()
-    xf_1d, rho, k_cpu = conjugateGradient(A_csr, x_1d, b_1d, max_ite, tol)
-    t1_cpu = time.time()
-    cpu_time = t1_cpu - t0_cpu
-    cpu_times.append(cpu_time)
-    print(f"CPU conjugate gradient took {cpu_time:.4f} seconds with {k_cpu} iterations")
-
-    # Analyze CPU solution accuracy
-    cpu_numerical_solution = oned_to_hwl_colmajor(height, width, zDim, xf_1d, np.float32)
-    error_cpu = cpu_numerical_solution - u_exact_values[:,:,:zDim]
-    max_abs_error_cpu = np.max(np.abs(error_cpu))
-    cpu_errors.append(max_abs_error_cpu)
-    print(f"CPU maximum absolute error: {max_abs_error_cpu:.6e}")
-
-    # Calculate RMSE for CPU
-    rmse_cpu = np.sqrt(np.mean(np.square(error_cpu)))
-    print(f"CPU root mean square error: {rmse_cpu:.6e}")
     
   # Save results to file
   # Format: size h cond cpu_time wse_time cpu_error wse_error cpu_iter wse_iter
