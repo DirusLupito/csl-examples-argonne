@@ -1,30 +1,47 @@
 #!/usr/bin/env cs_python
-# pylint: disable=too-many-function-args
-""" test Conjugate Gradient of a sparse matrix A built by 7-point stencil
 
-  The following CG algorithm is adopted from algorithm 10.2.1 [1].
+# Copyright 2025 Cerebras Systems.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# pylint: disable=too-many-function-args
+""" test BiCGSTAB of a sparse matrix A built by 7-point stencil
+
+  The following BiCGSTAB algorithm is modified from [1].
   ---
-  The algorithm of Conjugate Gradient (CG) is
+  The algorithm of unpreconditioned BiCGSTAB is
     Given b, x0 and tol = eps*|b|
     k = 0
     x = x0
-    r = b - A*x
-    rho = |r|^2
-    while rho > tol*tol and k < max_ite
+    r0 = b - A*x
+    r = r0
+    p = r0
+    xi = |r|^2 = (r0, r0)
+    rho = xi
+    while xi > tol*tol and k < max_ite
         k = k + 1
-        if k == 1
-           p = r
-        else
-           beta = rho / rho_old
-           p = r + beta * p
-        end
-        w = A*p
-        eta = dot(w, p)
-        alpha = rho/eta
-        x = x + alpha * p
-        r = r - alpha * w
+        v = A*p
+        alpha = rho/(r0, v)
+        s = r - alpha*v
+        t = A*s
+        w = (t,s)/(t,t)
+        x = x + alpha*p + w*s
+        r = s - w*t
         rho_old = rho
-        rho = |r|^2
+        rho = (r0, r)
+        beta = (rho/rho_old)*(alpha/w)
+        p = r + beta*(p - w*v)
+        xi = |r|^2
     end
     x approximates the solution of a linear system Ax = b
 
@@ -60,17 +77,20 @@
        tic()       // record start time
        r = b - A*x
        for k = ...
-         update p
-         w = A*p
+         v = A*p
+         update s
+         t = A*s
          update x
          update r
-         update rho=(r,r)
-         D2H(rho) to check convergence
+         update xi=(r,r)
+         update p
+         D2H(xi) to check convergence
        end
        toc()       // record end time
   ---
-  This framework does transfer the nrm(r) back to host for each iteration of CG. So the
-  I/O pressure is high, not good for performance. device_run.py removes this IO pressure.
+  This framework does transfer the nrm(r) back to host for each iteration of BiCGSTAB.
+  So the I/O pressure is high, not good for performance. device_run.py removes
+  this IO pressure.
 
   The tic() samples "time_start" and toc() samples "time_end". The sync() samples
   "time_ref" which is used to shift "time_start" and "time_end".
@@ -90,9 +110,14 @@
     --max-ite=<int> number of iterations
     --channels=<int> specifies the number of I/O channels, no bigger than 16
 
+  WARNING: BiCGSTAB may not converge if rho=(rj, r0) is close to zero.
+  If it does happen, we need to restart the BiCGSTAB.
+  The algorithm here does not provide the restart.
+
   Reference:
-  [1] Gene H. Golub, Charles F. Van Loan, MATRIX COMPUTATIONS third edition,
-      Johns Hopkins
+  [1] H. A. VAN DER VORST, BI-CGSTAB: A FAST AND SMOOTHLY CONVERGING VARIANT
+      OF BI-CG FOR THE SOLUTION OF NONSYMMETRIC LINEAR SYSTEMS,
+      SIAM J. ScI. STAT. COMPUT. Vol. 13, No. 2, pp. 631-644, March 1992
 """
 
 import random
@@ -100,10 +125,9 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
-# from bicgstab import bicgstab
 
 import numpy as np
-from cg import conjugateGradient
+from bicgstab import bicgstab
 from cmd_parser import parse_args
 from scipy.sparse.linalg import eigs
 from util import csr_7_pt_stencil, hwl_2_oned_colmajor, oned_to_hwl_colmajor
@@ -350,14 +374,16 @@ def main():
 
     # Initialize solution vectors
     np.random.seed(2)
-    x = (np.arange(height * width * zDim).reshape(height, width, zDim).astype(np.float32) + 100)
-
+    x = np.zeros((height, width, pe_length), dtype=np.float32)
+    #x = (np.arange(height * width * zDim).reshape(height, width, zDim).astype(np.float32) + 100)
+  
     x_1d = hwl_2_oned_colmajor(height, width, zDim, x, np.float32)
     nrm2_x = np.linalg.norm(x_1d.ravel(), 2)
     # |x0|_2 = 1
-    x_1d = x_1d / nrm2_x
-    x = x / nrm2_x
-
+    if nrm2_x > 0:
+      x_1d = x_1d / nrm2_x
+      x = x / nrm2_x
+  
     # Create a uniform grid in the unit cube [0,1]³
     x_coords = np.linspace(0, 1, width)
     y_coords = np.linspace(0, 1, height)
@@ -446,11 +472,6 @@ def main():
     # Create CSR matrix
     A_csr = csr_7_pt_stencil(stencil_coeff, height, width, zDim)
 
-    # check if A is symmetric or not
-    A_csc = A_csr.tocsc(copy=True)
-    A_csc = A_csc.sorted_indices().astype(np.float32)
-    print(f"The infinity norm of A_csr.data - A_csc.data = {np.linalg.norm(A_csr.data - A_csc.data, np.inf)}")
-
     # # Calculate condition number
     # vals, _ = eigs(A_csr, k=1, which="SM")
     # min_eig = abs(vals[0])
@@ -482,11 +503,11 @@ def main():
 
     # Run CPU solution
     t0_cpu = time.time()
-    xf_1d, rho, k_cpu = conjugateGradient(A_csr, x_1d, b_1d, max_ite, tol)
+    xf_1d, xi, k_cpu = bicgstab(A_csr, x_1d, b_1d, max_ite, tol)
     t1_cpu = time.time()
     cpu_time = t1_cpu - t0_cpu
     cpu_times.append(cpu_time)
-    print(f"CPU conjugate gradient took {cpu_time:.4f} seconds with {k_cpu} iterations")
+    print(f"CPU conjugate gradient took {cpu_time:.4f} seconds with {k_cpu} iterations and xi={xi:.6e}")
 
     # Analyze CPU solution accuracy
     cpu_numerical_solution = oned_to_hwl_colmajor(height, width, zDim, xf_1d, np.float32)
@@ -512,7 +533,7 @@ def main():
     
     artifact_path = compiler.compile(
       ".",
-      "src/layout_cg.csl",
+      "src/layout_bicgstab.csl",
       f"--fabric-dims=757,996 --fabric-offsets=4,1 --params=width:{size},height:{size},MAX_ZDIM:{size} --params=BLOCK_SIZE:{blockSize} --params=C0_ID:0 --params=C1_ID:1 --params=C2_ID:2 --params=C3_ID:3 --params=C4_ID:4 --params=C5_ID:5 --params=C6_ID:6 --params=C7_ID:7 --params=C8_ID:8 -o=out --memcpy --channels={channels} --width-west-buf={width_west_buf} --width-east-buf={width_east_buf}",
       "."
     )
@@ -539,8 +560,8 @@ def main():
         # Copy data to device and run CG
         symbol_b = runner.get_id("b")
         symbol_x = runner.get_id("x")
+        symbol_xi = runner.get_id("xi")
         symbol_k = runner.get_id("k")
-        symbol_rho = runner.get_id("rho")
         symbol_stencil_coeff = runner.get_id("stencil_coeff")
         symbol_time_buf_u16 = runner.get_id("time_buf_u16")
         symbol_time_ref = runner.get_id("time_ref")
@@ -602,9 +623,9 @@ def main():
         print("step 3: tic() records time_start")
         runner.launch("f_tic", nonblock=True)
 
-        print(f"step 4: Conjugate Gradient with max_ite={max_ite}, zDim={zDim}, tol={tol}")
+        print(f"step 4: BiCGSTAB with max_ite={max_ite}, zDim={zDim}, tol={tol}")
         runner.launch(
-            "f_cg",
+            "f_bicgstab",
             np.int16(zDim),
             np.float32(tol),
             np.int16(max_ite),
@@ -614,10 +635,10 @@ def main():
         print("step 5: toc() records time_end")
         runner.launch("f_toc", nonblock=False)
 
-        rho_wse = np.zeros(1, np.float32)
+        xi_wse = np.zeros(1, np.float32)
         runner.memcpy_d2h(
-            rho_wse,
-            symbol_rho,
+            xi_wse,
+            symbol_xi,
             0,
             0,
             1,
@@ -628,8 +649,8 @@ def main():
             order=MemcpyOrder.COL_MAJOR,
             nonblock=False,
         )
-        rho = rho_wse[0]
-        print(f"[CG] rho = |b-A*x|^2 = {rho}")
+        xi = xi_wse[0]
+        print(f"[BiCGSTAB] xi = |b-A*x|^2 = {xi}")
 
         print("step 6: prepare (time_start, time_end)")
         runner.launch("f_memcpy_timestamps", nonblock=False)
