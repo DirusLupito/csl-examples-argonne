@@ -711,7 +711,7 @@ def main():
               nonblock=False,
           )
           xi = xi_wse[0]
-          print(f"[BiCGSTAB] iter {k}: xi = {xi}")
+          print(f"[BiCGSTAB] iter {k_wse}: xi = {xi}")
 
         print("step 5: toc() records time_end")
         runner.launch("f_toc", nonblock=False)
