@@ -5,6 +5,14 @@ Reads data from results.txt and creates plots similar to those originally in app
 """
 
 import numpy as np
+import matplotlib as mpl
+mpl.rcParams.update({
+    'axes.titlesize': 24,    # assuming original was 12
+    'axes.labelsize': 24,    # assuming original was 12
+    'xtick.labelsize': 20,   # assuming original was 10
+    'ytick.labelsize': 20,   # assuming original was 10
+    'legend.fontsize': 20    # assuming original was 10
+})
 import matplotlib.pyplot as plt
 import os
 from tabulate import tabulate  # Add this import at the top of the file
